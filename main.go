@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	dockerclient "github.com/docker/go-sdk/client"
+	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/client"
@@ -78,30 +79,28 @@ func main() {
 
 	slog.Info(fmt.Sprintf("Containers: %d, Images: %d", len(containers.Items), len(images.Items)))
 
-	var eligibleImages []image.Summary
+	var eligibleRefs []name.Reference
 	for _, c := range containers.Items {
-		containerImage, err := findImageForContainer(c, images.Items)
+		containerInspect, err := docker.ContainerInspect(ctx, c.ID, client.ContainerInspectOptions{})
 		if err != nil {
 			slog.Error(err.Error())
 			continue
 		}
-		if containerImage.RepoTags == nil {
-			slog.Warn("Image %s has no repo tags - it's probably not from a registry")
+		imageRef := containerInspect.Container.Config.Image
+		reference, err := name.ParseReference(imageRef)
+		if err != nil {
+			slog.Error(err.Error())
 			continue
 		}
-		if !slices.ContainsFunc(eligibleImages, func(summary image.Summary) bool {
-			return summary.ID == containerImage.ID
+		if !slices.ContainsFunc(eligibleRefs, func(r name.Reference) bool {
+			return r == reference
 		}) {
-			eligibleImages = append(eligibleImages, containerImage)
+			eligibleRefs = append(eligibleRefs, reference)
 		}
 	}
 
-	for _, eligibleImage := range eligibleImages {
-		if isFromGHCR(eligibleImage) {
-			slog.Info("ghcr.io image: %d", eligibleImage.RepoTags[0])
-		} else {
-			slog.Info("dockerhub.io image: %d", eligibleImage.RepoTags[0])
-		}
+	for _, ref := range eligibleRefs {
+
 	}
 
 	slog.Info("Complete")
