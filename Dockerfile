@@ -1,4 +1,8 @@
-FROM golang:1.27.3 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3 AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT
 
 WORKDIR /app
 
@@ -8,7 +12,7 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v} go build \
     -ldflags="-s -w" \
     -o main .
 
