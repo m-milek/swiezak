@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"slices"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/moby/moby/client"
 )
 
@@ -19,9 +22,12 @@ type ImageStatus string
 
 const (
 	ImageStatusUnknown          ImageStatus = "unknown"
+	ImageStatusNotCheckable     ImageStatus = "not-checkable"
+	ImageStatusError            ImageStatus = "error"
 	ImageStatusPinned           ImageStatus = "pinned"
+	ImageStatusUpToDate         ImageStatus = "up-to-date"
 	ImageStatusRebuildAvailable ImageStatus = "rebuild"
-	ImageStatusUpgradeAvailable ImageStatus = "update"
+	ImageStatusUpgradeAvailable ImageStatus = "upgrade"
 )
 
 type ImageToCheck struct {
@@ -53,6 +59,33 @@ func splitReference(image string) (tag name.Tag, hasTag bool, pin string, err er
 		return name.Tag{}, false, "", fmt.Errorf("parse tag %q: %w", beforePin, err)
 	}
 	return tag, true, pin, nil
+}
+
+func statusFromRegistryError(err error) ImageStatus {
+	if terr, ok := errors.AsType[*transport.Error](err); ok && (terr.StatusCode == http.StatusUnauthorized || terr.StatusCode == http.StatusNotFound) {
+		return ImageStatusNotCheckable
+	}
+	slog.Error("registry query failed", "err", err)
+	return ImageStatusError
+}
+
+type CraneResponse struct {
+	digest string
+	err    error
+}
+
+func getRemoteDigest(cacheMap map[string]CraneResponse, tagName string) (string, error) {
+	if cache, ok := cacheMap[tagName]; ok {
+		return cache.digest, cache.err
+	}
+
+	remoteHash, err := crane.Digest(tagName)
+	cacheMap[tagName] = CraneResponse{
+		digest: remoteHash,
+		err:    err,
+	}
+
+	return remoteHash, err
 }
 
 func main() {
@@ -102,9 +135,10 @@ func main() {
 			}
 			localDigests = append(localDigests, digest)
 		}
+		status := ImageStatusUnknown
 		if localDigests == nil {
-			slog.Warn("Local digests empty - skipping")
-			continue
+			slog.Warn("Local digests empty", "image", configImage)
+			status = ImageStatusNotCheckable
 		}
 
 		platform := v1.Platform{
@@ -121,42 +155,47 @@ func main() {
 			configImage:  configImage,
 			localDigests: localDigests,
 			platform:     platform,
-			imageStatus:  ImageStatusUnknown,
+			imageStatus:  status,
 		})
 	}
 
-	for i, _ := range imagesToCheck {
-		entry := imagesToCheck[i]
+	var craneCache = make(map[string]CraneResponse)
+
+	for i := range imagesToCheck {
+		entry := &imagesToCheck[i] // wskaźnik, żeby zmiana statusu trafiła do slice'a, a nie do kopii
+		if entry.imageStatus == ImageStatusNotCheckable {
+			continue
+		}
+		if !entry.hasTag {
+			entry.imageStatus = ImageStatusPinned
+			continue
+		}
+		remoteHash, err := getRemoteDigest(craneCache, entry.tag.Name())
+		if err != nil {
+			entry.imageStatus = statusFromRegistryError(err)
+			continue
+		}
 		switch {
 		case entry.hasTag && entry.pin != "":
-			slog.Info(fmt.Sprintf("Image pinned with tag: %s", entry.configImage))
-			remoteHash, err := crane.Digest(entry.tag.Name())
-			if err != nil {
-				slog.Error(err.Error())
-				continue
-			}
 			if remoteHash != entry.pin {
-				slog.Info("POSSIBLE UPDATE DETECTED")
 				entry.imageStatus = ImageStatusRebuildAvailable
+			} else {
+				entry.imageStatus = ImageStatusUpToDate
 			}
 		case entry.hasTag:
-			slog.Info(fmt.Sprintf("Image not pinned: %s", entry.configImage))
-			remoteHash, err := crane.Digest(entry.tag.Name())
-			if err != nil {
-				slog.Error(err.Error())
-				continue
-			}
-			if !slices.ContainsFunc(entry.localDigests, func(digest name.Digest) bool {
+			if slices.ContainsFunc(entry.localDigests, func(digest name.Digest) bool {
 				return digest.DigestStr() == remoteHash
 			}) {
-				slog.Info("POSSIBLE UPDATE DETECTED")
+				entry.imageStatus = ImageStatusUpToDate
+			} else {
 				entry.imageStatus = ImageStatusRebuildAvailable
 			}
-		default:
-			slog.Info(fmt.Sprintf("Image pinned: %s", entry.configImage))
-			entry.imageStatus = ImageStatusPinned
 		}
-	}
 
-	slog.Info("Complete")
+		for _, entry := range imagesToCheck {
+			slog.Info("result", "image", entry.configImage, "pinned", entry.pin != "", "status", entry.imageStatus)
+		}
+
+		slog.Info("Complete")
+	}
 }
