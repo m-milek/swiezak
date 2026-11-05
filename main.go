@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -28,7 +29,6 @@ const (
 	ImageStatusPinned           ImageStatus = "pinned"
 	ImageStatusUpToDate         ImageStatus = "up-to-date"
 	ImageStatusRebuildAvailable ImageStatus = "rebuild"
-	ImageStatusUpgradeAvailable ImageStatus = "upgrade"
 )
 
 type ImageToCheck struct {
@@ -43,6 +43,9 @@ type ImageToCheck struct {
 	platform                     v1.Platform
 	isVersion                    bool
 	version                      TagVersion
+	upgradeMajor                 []string
+	upgradeMinor                 []string
+	upgradePatch                 []string
 
 	imageStatus ImageStatus
 }
@@ -153,6 +156,35 @@ func parseVersion(versionString string) (TagVersion, error) {
 		segments: segments,
 		suffix:   suffix,
 	}, nil
+}
+
+func isCandidateVersionNewer(current, candidate TagVersion) bool {
+	for idx := range min(len(current.segments), len(candidate.segments)) {
+		currentSegment := current.segments[idx]
+		candidateSegment := candidate.segments[idx]
+		if candidateSegment != currentSegment {
+			return candidateSegment > currentSegment
+		}
+	}
+	return false
+}
+
+func compareVersions(a, b TagVersion) int {
+	for idx := range min(len(a.segments), len(b.segments)) {
+		if a.segments[idx] != b.segments[idx] {
+			return cmp.Compare(a.segments[idx], b.segments[idx])
+		}
+	}
+	return cmp.Compare(len(b.segments), len(a.segments))
+}
+
+func firstDifferingSegment(current, candidate TagVersion) int {
+	for idx := range min(len(current.segments), len(candidate.segments)) {
+		if current.segments[idx] != candidate.segments[idx] {
+			return idx
+		}
+	}
+	return -1
 }
 
 func main() {
@@ -281,12 +313,12 @@ func main() {
 		if entry.imageStatus == ImageStatusRebuildAvailable {
 			remotePlatformHash, err := getRemoteDigest(craneCache, entry.tag.Name(), &entry.platform)
 			if err != nil {
-				entry.imageStatus = statusFromRegistryError(err)
-				continue
-			}
-			entry.remotePlatformManifestDigest = remotePlatformHash
-			if entry.localPlatformManifestDigest != "" && entry.remotePlatformManifestDigest == entry.localPlatformManifestDigest {
-				entry.imageStatus = ImageStatusUpToDate
+				slog.Error("platform digest query failed", "image", entry.configImage, "err", err)
+			} else {
+				entry.remotePlatformManifestDigest = remotePlatformHash
+				if entry.localPlatformManifestDigest != "" && entry.remotePlatformManifestDigest == entry.localPlatformManifestDigest {
+					entry.imageStatus = ImageStatusUpToDate
+				}
 			}
 		}
 
@@ -298,11 +330,39 @@ func main() {
 			slog.Error("listing tags failed", "repo", entry.tag.Context().Name(), "err", err)
 			continue
 		}
-		slog.Info("tags", "repo", entry.tag.Context().Name(), "count", len(tags))
+
+		upgrades := [3]*[]string{&entry.upgradeMajor, &entry.upgradeMinor, &entry.upgradePatch}
+		for _, candidateTag := range tags {
+			candidate, err := parseVersion(candidateTag)
+			if err != nil {
+				continue
+			}
+			if candidate.hasV != entry.version.hasV ||
+				candidate.suffix != entry.version.suffix ||
+				len(candidate.segments) > len(entry.version.segments) ||
+				len(strconv.Itoa(candidate.segments[0])) > len(strconv.Itoa(entry.version.segments[0]))+1 {
+				continue
+			}
+			if !isCandidateVersionNewer(entry.version, candidate) {
+				continue
+			}
+			level := firstDifferingSegment(entry.version, candidate)
+			if level < 0 || level >= len(upgrades) {
+				continue
+			}
+			*upgrades[level] = append(*upgrades[level], candidateTag)
+		}
+		for _, list := range upgrades {
+			slices.SortFunc(*list, func(a, b string) int {
+				aVersion, _ := parseVersion(a)
+				bVersion, _ := parseVersion(b)
+				return compareVersions(bVersion, aVersion)
+			})
+		}
 	}
 
 	for _, entry := range imagesToCheck {
-		slog.Info("result", "image", entry.configImage, "pinned", entry.pin != "", "status", entry.imageStatus, "platform", entry.platform.String(), "local", entry.localPlatformManifestDigest, "remote", entry.remotePlatformManifestDigest)
+		slog.Info("result", "image", entry.configImage, "pinned", entry.pin != "", "status", entry.imageStatus, "major", entry.upgradeMajor, "minor", entry.upgradeMinor, "patch", entry.upgradePatch)
 	}
 
 	slog.Info("Complete")
