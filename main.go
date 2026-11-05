@@ -229,6 +229,9 @@ func main() {
 				continue
 			}
 			entry.remotePlatformManifestDigest = remotePlatformHash
+			if entry.localPlatformManifestDigest != "" && entry.remotePlatformManifestDigest == entry.localPlatformManifestDigest {
+				entry.imageStatus = ImageStatusUpToDate
+			}
 		}
 	}
 
