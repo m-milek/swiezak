@@ -3,21 +3,18 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"slices"
 	"strconv"
 
-	dockerclient "github.com/docker/go-sdk/client"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/m-milek/swiezak/internal/docker"
 	"github.com/m-milek/swiezak/internal/version"
-	"github.com/moby/moby/client"
 )
 
 type ImageStatus string
@@ -42,13 +39,6 @@ func statusFromRegistryError(err error) ImageStatus {
 	}
 	slog.Error("registry query failed", "err", err)
 	return ImageStatusError
-}
-
-func normalizePlatform(p v1.Platform) v1.Platform {
-	if p.Architecture == "arm64" && p.Variant == "v8" {
-		p.Variant = ""
-	}
-	return p
 }
 
 type CraneResponse struct {
@@ -99,63 +89,10 @@ func getRemoteTags(cacheMap map[string]TagsResponse, repoName string) ([]string,
 func main() {
 	ctx := context.Background()
 
-	dockerClient, err := dockerclient.New(ctx)
-	if err != nil {
-		slog.Error("Failed to connect to Docker socket")
-		os.Exit(1)
-	}
-	defer dockerClient.Close()
-
-	containers, err := dockerClient.ContainerList(ctx, client.ContainerListOptions{All: true})
+	images, err := docker.ListImages(ctx)
 	if err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)
-	}
-
-	slog.Info(fmt.Sprintf("Containers: %d", len(containers.Items)))
-
-	var images []docker.Image
-	for _, c := range containers.Items {
-		containerInspect, err := dockerClient.ContainerInspect(ctx, c.ID, client.ContainerInspectOptions{})
-		if err != nil {
-			slog.Error(err.Error())
-			continue
-		}
-		imageInspect, err := dockerClient.ImageInspect(ctx, c.ImageID)
-		if err != nil {
-			slog.Error(err.Error())
-			continue
-		}
-		configImage := containerInspect.Container.Config.Image
-
-		if _, _, _, err := docker.SplitReference(configImage); err != nil {
-			slog.Error(err.Error())
-			continue
-		}
-
-		platform := v1.Platform{
-			OS:           imageInspect.Os,
-			Architecture: imageInspect.Architecture,
-			Variant:      imageInspect.Variant,
-		}
-		platformDigest := ""
-		if d := containerInspect.Container.ImageManifestDescriptor; d != nil {
-			platformDigest = d.Digest.String()
-			if d.Platform != nil {
-				platform = v1.Platform{
-					OS:           d.Platform.OS,
-					Architecture: d.Platform.Architecture,
-					Variant:      d.Platform.Variant,
-				}
-			}
-		}
-
-		images = append(images, docker.Image{
-			ConfigImage:    configImage,
-			RepoDigests:    imageInspect.RepoDigests,
-			Platform:       normalizePlatform(platform),
-			PlatformDigest: platformDigest,
-		})
 	}
 
 	digestCache := make(map[string]CraneResponse)
