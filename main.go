@@ -6,8 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"slices"
-	"strconv"
 
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -168,33 +166,5 @@ func findUpgrades(img docker.Image, tag name.Tag, tagsCache map[string]TagsRespo
 		return upgrades
 	}
 
-	for _, candidateTag := range tags {
-		candidate, err := version.ParseVersion(candidateTag)
-		if err != nil {
-			continue
-		}
-		if candidate.HasV != current.HasV ||
-			candidate.Suffix != current.Suffix ||
-			len(candidate.Segments) > len(current.Segments) ||
-			len(strconv.Itoa(candidate.Segments[0])) > len(strconv.Itoa(current.Segments[0]))+1 {
-			continue
-		}
-		if !version.IsCandidateVersionNewer(current, candidate) {
-			continue
-		}
-		level := version.FirstDifferingSegment(current, candidate)
-		if level < 0 || level >= len(upgrades) {
-			continue
-		}
-		upgrades[level] = append(upgrades[level], candidateTag)
-	}
-
-	for _, list := range upgrades {
-		slices.SortFunc(list, func(a, b string) int {
-			aVersion, _ := version.ParseVersion(a)
-			bVersion, _ := version.ParseVersion(b)
-			return version.CompareVersions(bVersion, aVersion)
-		})
-	}
-	return upgrades
+	return version.Upgrades(current, tags)
 }

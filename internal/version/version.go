@@ -3,6 +3,7 @@ package version
 import (
 	"cmp"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -63,4 +64,38 @@ func FirstDifferingSegment(current, candidate TagVersion) int {
 		}
 	}
 	return -1
+}
+
+func Upgrades(current TagVersion, tags []string) [3][]string {
+	var upgrades [3][]string
+
+	for _, candidateTag := range tags {
+		candidate, err := ParseVersion(candidateTag)
+		if err != nil {
+			continue
+		}
+		if candidate.HasV != current.HasV ||
+			candidate.Suffix != current.Suffix ||
+			len(candidate.Segments) > len(current.Segments) ||
+			len(strconv.Itoa(candidate.Segments[0])) > len(strconv.Itoa(current.Segments[0]))+1 {
+			continue
+		}
+		if !IsCandidateVersionNewer(current, candidate) {
+			continue
+		}
+		level := FirstDifferingSegment(current, candidate)
+		if level < 0 || level >= len(upgrades) {
+			continue
+		}
+		upgrades[level] = append(upgrades[level], candidateTag)
+	}
+
+	for _, list := range upgrades {
+		slices.SortFunc(list, func(a, b string) int {
+			aVersion, _ := ParseVersion(a)
+			bVersion, _ := ParseVersion(b)
+			return CompareVersions(bVersion, aVersion)
+		})
+	}
+	return upgrades
 }
