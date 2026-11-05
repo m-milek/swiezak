@@ -8,6 +8,7 @@ import (
 	"github.com/m-milek/swiezak/internal/check"
 	"github.com/m-milek/swiezak/internal/docker"
 	"github.com/m-milek/swiezak/internal/registry"
+	"github.com/m-milek/swiezak/internal/report"
 )
 
 func main() {
@@ -22,9 +23,7 @@ func main() {
 	registryClient := registry.NewClient()
 
 	for _, img := range images {
-		result := check.Image(img, registryClient)
-		_, _, pin := img.Reference()
-		slog.Info("result", "image", img.ConfigImage, "pinned", pin != "", "status", result.Status, "major", result.Major, "minor", result.Minor, "patch", result.Patch)
+		report.Print(img, check.Image(img, registryClient))
 	}
 
 	slog.Info("Complete")
