@@ -5,22 +5,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"regexp"
 	"slices"
 	"strings"
 
 	dockerclient "github.com/docker/go-sdk/client"
+	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/image"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/moby/moby/client"
-)
-
-type Registry string
-
-const (
-	RegistryDockerHub Registry = "Docker Hub"
-	RegistryGHCR      Registry = "GitHub Container Registry"
 )
 
 type ImageStatus string
@@ -32,27 +24,35 @@ const (
 	ImageStatusUpgradeAvailable ImageStatus = "update"
 )
 
-func isFromGHCR(image image.Summary) bool {
-	return slices.ContainsFunc(image.RepoTags, func(s string) bool {
-		return strings.HasPrefix(s, "ghcr.io/")
-	})
+type ImageToCheck struct {
+	tag          name.Tag
+	hasTag       bool
+	pin          string
+	imageID      string
+	configImage  string
+	localDigests []name.Digest
+	platform     v1.Platform
+
+	imageStatus ImageStatus
 }
 
-func isPinned(image image.Summary) bool {
-	pattern := regexp.MustCompile(`.*/@sha256:`)
-	return slices.ContainsFunc(image.RepoTags, func(s string) bool {
-		return pattern.MatchString(s)
-	})
-}
+func splitReference(image string) (tag name.Tag, hasTag bool, pin string, err error) {
+	beforePin, pin, hasPin := strings.Cut(image, "@")
 
-func findImageForContainer(container container.Summary, images []image.Summary) (image.Summary, error) {
-	imageIndex := slices.IndexFunc(images, func(summary image.Summary) bool {
-		return summary.ID == container.ImageID
-	})
-	if imageIndex == -1 {
-		return image.Summary{}, fmt.Errorf("no image found for container %s", container.ID)
+	lastSegment := beforePin
+	if _, after, found := strings.CutLast(beforePin, "/"); found {
+		lastSegment = after
 	}
-	return images[imageIndex], nil
+
+	if hasPin && !strings.Contains(lastSegment, ":") {
+		return name.Tag{}, false, pin, nil
+	}
+
+	tag, err = name.NewTag(beforePin)
+	if err != nil {
+		return name.Tag{}, false, "", fmt.Errorf("parse tag %q: %w", beforePin, err)
+	}
+	return tag, true, pin, nil
 }
 
 func main() {
@@ -71,39 +71,92 @@ func main() {
 		os.Exit(1)
 	}
 
-	images, err := docker.ImageList(ctx, client.ImageListOptions{All: true})
-	if err != nil {
-		slog.Error(err.Error())
-		os.Exit(1)
-	}
+	slog.Info(fmt.Sprintf("Containers: %d", len(containers.Items)))
 
-	slog.Info(fmt.Sprintf("Containers: %d, Images: %d", len(containers.Items), len(images.Items)))
-
-	var eligibleRefs []name.Reference
+	var imagesToCheck []ImageToCheck
 	for _, c := range containers.Items {
 		containerInspect, err := docker.ContainerInspect(ctx, c.ID, client.ContainerInspectOptions{})
 		if err != nil {
 			slog.Error(err.Error())
 			continue
 		}
-		imageRef := containerInspect.Container.Config.Image
-		reference, err := name.ParseReference(imageRef)
+		imageInspect, err := docker.ImageInspect(ctx, c.ImageID)
 		if err != nil {
 			slog.Error(err.Error())
 			continue
 		}
-		if !slices.ContainsFunc(eligibleRefs, func(r name.Reference) bool {
-			return r == reference
-		}) {
-			eligibleRefs = append(eligibleRefs, reference)
+		configImage := containerInspect.Container.Config.Image
+
+		tag, hasTag, pin, err := splitReference(configImage)
+		if err != nil {
+			slog.Error(err.Error())
+			continue
+		}
+
+		var localDigests []name.Digest
+		for _, digestStr := range imageInspect.RepoDigests {
+			digest, err := name.NewDigest(digestStr)
+			if err != nil {
+				slog.Error(err.Error())
+				continue
+			}
+			localDigests = append(localDigests, digest)
+		}
+		if localDigests == nil {
+			slog.Warn("Local digests empty - skipping")
+			continue
+		}
+
+		platform := v1.Platform{
+			OS:           imageInspect.Os,
+			Architecture: imageInspect.Architecture,
+			Variant:      imageInspect.Variant,
+		}
+
+		imagesToCheck = append(imagesToCheck, ImageToCheck{
+			tag:          tag,
+			hasTag:       hasTag,
+			pin:          pin,
+			imageID:      imageInspect.ID,
+			configImage:  configImage,
+			localDigests: localDigests,
+			platform:     platform,
+			imageStatus:  ImageStatusUnknown,
+		})
+	}
+
+	for i, _ := range imagesToCheck {
+		entry := imagesToCheck[i]
+		switch {
+		case entry.hasTag && entry.pin != "":
+			slog.Info(fmt.Sprintf("Image pinned with tag: %s", entry.configImage))
+			remoteHash, err := crane.Digest(entry.tag.Name())
+			if err != nil {
+				slog.Error(err.Error())
+				continue
+			}
+			if remoteHash != entry.pin {
+				slog.Info("POSSIBLE UPDATE DETECTED")
+				entry.imageStatus = ImageStatusRebuildAvailable
+			}
+		case entry.hasTag:
+			slog.Info(fmt.Sprintf("Image not pinned: %s", entry.configImage))
+			remoteHash, err := crane.Digest(entry.tag.Name())
+			if err != nil {
+				slog.Error(err.Error())
+				continue
+			}
+			if !slices.ContainsFunc(entry.localDigests, func(digest name.Digest) bool {
+				return digest.DigestStr() == remoteHash
+			}) {
+				slog.Info("POSSIBLE UPDATE DETECTED")
+				entry.imageStatus = ImageStatusRebuildAvailable
+			}
+		default:
+			slog.Info(fmt.Sprintf("Image pinned: %s", entry.configImage))
+			entry.imageStatus = ImageStatusPinned
 		}
 	}
 
-	for _, ref := range eligibleRefs {
-
-	}
-
 	slog.Info("Complete")
-
-	os.Exit(0)
 }
