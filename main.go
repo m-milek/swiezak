@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	dockerclient "github.com/docker/go-sdk/client"
@@ -40,6 +41,8 @@ type ImageToCheck struct {
 	localPlatformManifestDigest  string
 	remotePlatformManifestDigest string
 	platform                     v1.Platform
+	isVersion                    bool
+	version                      TagVersion
 
 	imageStatus ImageStatus
 }
@@ -102,6 +105,54 @@ func getRemoteDigest(cacheMap map[string]CraneResponse, tagName string, platform
 	}
 
 	return remoteHash, err
+}
+
+type TagsResponse struct {
+	tags []string
+	err  error
+}
+
+func getRemoteTags(cacheMap map[string]TagsResponse, repoName string) ([]string, error) {
+	if cache, ok := cacheMap[repoName]; ok {
+		return cache.tags, cache.err
+	}
+
+	tags, err := crane.ListTags(repoName)
+	cacheMap[repoName] = TagsResponse{
+		tags: tags,
+		err:  err,
+	}
+
+	return tags, err
+}
+
+type TagVersion struct {
+	hasV     bool
+	segments []int
+	suffix   string
+}
+
+func parseVersion(versionString string) (TagVersion, error) {
+	afterV, hasV := strings.CutPrefix(versionString, "v")
+	semver, suffix, _ := strings.Cut(afterV, "-")
+
+	var segments []int
+	for _, segment := range strings.Split(semver, ".") {
+		if segment == "" || strings.Trim(segment, "0123456789") != "" {
+			return TagVersion{}, fmt.Errorf("not a version: %q", versionString)
+		}
+		segmentInt, err := strconv.Atoi(segment)
+		if err != nil {
+			return TagVersion{}, fmt.Errorf("not a version: %q", versionString)
+		}
+		segments = append(segments, segmentInt)
+	}
+
+	return TagVersion{
+		hasV:     hasV,
+		segments: segments,
+		suffix:   suffix,
+	}, nil
 }
 
 func main() {
@@ -176,6 +227,8 @@ func main() {
 			localPlatformManifestDigest = containerInspect.Container.ImageManifestDescriptor.Digest.String()
 		}
 
+		version, versionErr := parseVersion(tag.TagStr())
+
 		imagesToCheck = append(imagesToCheck, ImageToCheck{
 			tag:                         tag,
 			hasTag:                      hasTag,
@@ -186,10 +239,13 @@ func main() {
 			localPlatformManifestDigest: localPlatformManifestDigest,
 			platform:                    platform,
 			imageStatus:                 status,
+			version:                     version,
+			isVersion:                   versionErr == nil,
 		})
 	}
 
 	var craneCache = make(map[string]CraneResponse)
+	var tagsCache = make(map[string]TagsResponse)
 
 	for i := range imagesToCheck {
 		entry := &imagesToCheck[i]
@@ -233,6 +289,16 @@ func main() {
 				entry.imageStatus = ImageStatusUpToDate
 			}
 		}
+
+		if !entry.isVersion {
+			continue
+		}
+		tags, err := getRemoteTags(tagsCache, entry.tag.Context().Name())
+		if err != nil {
+			slog.Error("listing tags failed", "repo", entry.tag.Context().Name(), "err", err)
+			continue
+		}
+		slog.Info("tags", "repo", entry.tag.Context().Name(), "count", len(tags))
 	}
 
 	for _, entry := range imagesToCheck {
