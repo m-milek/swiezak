@@ -69,6 +69,13 @@ func statusFromRegistryError(err error) ImageStatus {
 	return ImageStatusError
 }
 
+func normalizePlatform(p v1.Platform) v1.Platform {
+	if p.Architecture == "arm64" && p.Variant == "v8" {
+		p.Variant = ""
+	}
+	return p
+}
+
 type CraneResponse struct {
 	digest string
 	err    error
@@ -146,6 +153,14 @@ func main() {
 			Architecture: imageInspect.Architecture,
 			Variant:      imageInspect.Variant,
 		}
+		if d := containerInspect.Container.ImageManifestDescriptor; d != nil && d.Platform != nil {
+			platform = v1.Platform{
+				OS:           d.Platform.OS,
+				Architecture: d.Platform.Architecture,
+				Variant:      d.Platform.Variant,
+			}
+		}
+		platform = normalizePlatform(platform)
 
 		imagesToCheck = append(imagesToCheck, ImageToCheck{
 			tag:          tag,
@@ -162,7 +177,7 @@ func main() {
 	var craneCache = make(map[string]CraneResponse)
 
 	for i := range imagesToCheck {
-		entry := &imagesToCheck[i] // wskaźnik, żeby zmiana statusu trafiła do slice'a, a nie do kopii
+		entry := &imagesToCheck[i]
 		if entry.imageStatus == ImageStatusNotCheckable {
 			continue
 		}
@@ -193,7 +208,7 @@ func main() {
 		}
 
 		for _, entry := range imagesToCheck {
-			slog.Info("result", "image", entry.configImage, "pinned", entry.pin != "", "status", entry.imageStatus)
+			slog.Info("result", "image", entry.configImage, "pinned", entry.pin != "", "status", entry.imageStatus, "platform", entry.platform.String())
 		}
 
 		slog.Info("Complete")
