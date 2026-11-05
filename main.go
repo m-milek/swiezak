@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+	"github.com/m-milek/swiezak/internal/version"
 	"github.com/moby/moby/client"
 )
 
@@ -42,7 +42,7 @@ type ImageToCheck struct {
 	remotePlatformManifestDigest string
 	platform                     v1.Platform
 	isVersion                    bool
-	version                      TagVersion
+	version                      version.TagVersion
 	upgradeMajor                 []string
 	upgradeMinor                 []string
 	upgradePatch                 []string
@@ -129,64 +129,6 @@ func getRemoteTags(cacheMap map[string]TagsResponse, repoName string) ([]string,
 	return tags, err
 }
 
-type TagVersion struct {
-	hasV     bool
-	segments []int
-	suffix   string
-}
-
-func parseVersion(versionString string) (TagVersion, error) {
-	afterV, hasV := strings.CutPrefix(versionString, "v")
-	semver, suffix, _ := strings.Cut(afterV, "-")
-
-	var segments []int
-	for _, segment := range strings.Split(semver, ".") {
-		if segment == "" || strings.Trim(segment, "0123456789") != "" {
-			return TagVersion{}, fmt.Errorf("not a version: %q", versionString)
-		}
-		segmentInt, err := strconv.Atoi(segment)
-		if err != nil {
-			return TagVersion{}, fmt.Errorf("not a version: %q", versionString)
-		}
-		segments = append(segments, segmentInt)
-	}
-
-	return TagVersion{
-		hasV:     hasV,
-		segments: segments,
-		suffix:   suffix,
-	}, nil
-}
-
-func isCandidateVersionNewer(current, candidate TagVersion) bool {
-	for idx := range min(len(current.segments), len(candidate.segments)) {
-		currentSegment := current.segments[idx]
-		candidateSegment := candidate.segments[idx]
-		if candidateSegment != currentSegment {
-			return candidateSegment > currentSegment
-		}
-	}
-	return false
-}
-
-func compareVersions(a, b TagVersion) int {
-	for idx := range min(len(a.segments), len(b.segments)) {
-		if a.segments[idx] != b.segments[idx] {
-			return cmp.Compare(a.segments[idx], b.segments[idx])
-		}
-	}
-	return cmp.Compare(len(b.segments), len(a.segments))
-}
-
-func firstDifferingSegment(current, candidate TagVersion) int {
-	for idx := range min(len(current.segments), len(candidate.segments)) {
-		if current.segments[idx] != candidate.segments[idx] {
-			return idx
-		}
-	}
-	return -1
-}
-
 func main() {
 	ctx := context.Background()
 
@@ -259,7 +201,7 @@ func main() {
 			localPlatformManifestDigest = containerInspect.Container.ImageManifestDescriptor.Digest.String()
 		}
 
-		version, versionErr := parseVersion(tag.TagStr())
+		tagVersion, versionErr := version.ParseVersion(tag.TagStr())
 
 		imagesToCheck = append(imagesToCheck, ImageToCheck{
 			tag:                         tag,
@@ -271,7 +213,7 @@ func main() {
 			localPlatformManifestDigest: localPlatformManifestDigest,
 			platform:                    platform,
 			imageStatus:                 status,
-			version:                     version,
+			version:                     tagVersion,
 			isVersion:                   versionErr == nil,
 		})
 	}
@@ -333,20 +275,20 @@ func main() {
 
 		upgrades := [3]*[]string{&entry.upgradeMajor, &entry.upgradeMinor, &entry.upgradePatch}
 		for _, candidateTag := range tags {
-			candidate, err := parseVersion(candidateTag)
+			candidate, err := version.ParseVersion(candidateTag)
 			if err != nil {
 				continue
 			}
-			if candidate.hasV != entry.version.hasV ||
-				candidate.suffix != entry.version.suffix ||
-				len(candidate.segments) > len(entry.version.segments) ||
-				len(strconv.Itoa(candidate.segments[0])) > len(strconv.Itoa(entry.version.segments[0]))+1 {
+			if candidate.HasV != entry.version.HasV ||
+				candidate.Suffix != entry.version.Suffix ||
+				len(candidate.Segments) > len(entry.version.Segments) ||
+				len(strconv.Itoa(candidate.Segments[0])) > len(strconv.Itoa(entry.version.Segments[0]))+1 {
 				continue
 			}
-			if !isCandidateVersionNewer(entry.version, candidate) {
+			if !version.IsCandidateVersionNewer(entry.version, candidate) {
 				continue
 			}
-			level := firstDifferingSegment(entry.version, candidate)
+			level := version.FirstDifferingSegment(entry.version, candidate)
 			if level < 0 || level >= len(upgrades) {
 				continue
 			}
@@ -354,9 +296,9 @@ func main() {
 		}
 		for _, list := range upgrades {
 			slices.SortFunc(*list, func(a, b string) int {
-				aVersion, _ := parseVersion(a)
-				bVersion, _ := parseVersion(b)
-				return compareVersions(bVersion, aVersion)
+				aVersion, _ := version.ParseVersion(a)
+				bVersion, _ := version.ParseVersion(b)
+				return version.CompareVersions(bVersion, aVersion)
 			})
 		}
 	}
