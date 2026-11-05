@@ -16,12 +16,8 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v} go 
     -ldflags="-s -w" \
     -o main .
 
-FROM golang:1.27.3
+FROM gcr.io/distroless/static-debian13:nonroot
 
-COPY --from=builder --chown=65532:65532 /app/main /app/main
+COPY --from=builder /app/main /swiezak
 
-WORKDIR /app
-
-EXPOSE 1991
-
-CMD ["./main"]
+ENTRYPOINT ["/swiezak"]
