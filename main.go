@@ -31,13 +31,15 @@ const (
 )
 
 type ImageToCheck struct {
-	tag          name.Tag
-	hasTag       bool
-	pin          string
-	imageID      string
-	configImage  string
-	localDigests []name.Digest
-	platform     v1.Platform
+	tag                          name.Tag
+	hasTag                       bool
+	pin                          string
+	imageID                      string
+	configImage                  string
+	localDigests                 []name.Digest
+	localPlatformManifestDigest  string
+	remotePlatformManifestDigest string
+	platform                     v1.Platform
 
 	imageStatus ImageStatus
 }
@@ -81,13 +83,20 @@ type CraneResponse struct {
 	err    error
 }
 
-func getRemoteDigest(cacheMap map[string]CraneResponse, tagName string) (string, error) {
-	if cache, ok := cacheMap[tagName]; ok {
+func getRemoteDigest(cacheMap map[string]CraneResponse, tagName string, platform *v1.Platform) (string, error) {
+	key := tagName
+	var opts []crane.Option
+	if platform != nil {
+		key += "|" + platform.String()
+		opts = append(opts, crane.WithPlatform(platform))
+	}
+
+	if cache, ok := cacheMap[key]; ok {
 		return cache.digest, cache.err
 	}
 
-	remoteHash, err := crane.Digest(tagName)
-	cacheMap[tagName] = CraneResponse{
+	remoteHash, err := crane.Digest(tagName, opts...)
+	cacheMap[key] = CraneResponse{
 		digest: remoteHash,
 		err:    err,
 	}
@@ -162,15 +171,21 @@ func main() {
 		}
 		platform = normalizePlatform(platform)
 
+		var localPlatformManifestDigest = ""
+		if containerInspect.Container.ImageManifestDescriptor != nil {
+			localPlatformManifestDigest = containerInspect.Container.ImageManifestDescriptor.Digest.String()
+		}
+
 		imagesToCheck = append(imagesToCheck, ImageToCheck{
-			tag:          tag,
-			hasTag:       hasTag,
-			pin:          pin,
-			imageID:      imageInspect.ID,
-			configImage:  configImage,
-			localDigests: localDigests,
-			platform:     platform,
-			imageStatus:  status,
+			tag:                         tag,
+			hasTag:                      hasTag,
+			pin:                         pin,
+			imageID:                     imageInspect.ID,
+			configImage:                 configImage,
+			localDigests:                localDigests,
+			localPlatformManifestDigest: localPlatformManifestDigest,
+			platform:                    platform,
+			imageStatus:                 status,
 		})
 	}
 
@@ -185,7 +200,7 @@ func main() {
 			entry.imageStatus = ImageStatusPinned
 			continue
 		}
-		remoteHash, err := getRemoteDigest(craneCache, entry.tag.Name())
+		remoteHash, err := getRemoteDigest(craneCache, entry.tag.Name(), nil)
 		if err != nil {
 			entry.imageStatus = statusFromRegistryError(err)
 			continue
@@ -207,10 +222,19 @@ func main() {
 			}
 		}
 
-		for _, entry := range imagesToCheck {
-			slog.Info("result", "image", entry.configImage, "pinned", entry.pin != "", "status", entry.imageStatus, "platform", entry.platform.String())
+		if entry.imageStatus == ImageStatusRebuildAvailable {
+			remotePlatformHash, err := getRemoteDigest(craneCache, entry.tag.Name(), &entry.platform)
+			if err != nil {
+				entry.imageStatus = statusFromRegistryError(err)
+				continue
+			}
+			entry.remotePlatformManifestDigest = remotePlatformHash
 		}
-
-		slog.Info("Complete")
 	}
+
+	for _, entry := range imagesToCheck {
+		slog.Info("result", "image", entry.configImage, "pinned", entry.pin != "", "status", entry.imageStatus, "platform", entry.platform.String(), "local", entry.localPlatformManifestDigest, "remote", entry.remotePlatformManifestDigest)
+	}
+
+	slog.Info("Complete")
 }
