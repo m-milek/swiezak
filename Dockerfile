@@ -16,10 +16,10 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v} go 
     -ldflags="-s -w" \
     -o main . && mkdir /data
 
-FROM gcr.io/distroless/static-debian13:nonroot
+FROM gcr.io/distroless/static-debian13
 
 COPY --from=builder /app/main /swiezak
-COPY --from=builder --chown=65532:65532 /data /data
+COPY --from=builder /data /data
 
 ENV REPORT_PATH=/data/report.json
 

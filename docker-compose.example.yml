@@ -4,9 +4,8 @@ services:
     restart: unless-stopped
     ports:
       - "1991:1991"
-    group_add:
-      - "${DOCKER_GID:-999}"
     environment:
+      REFRESH_INTERVAL: ${REFRESH_INTERVAL:-8h}
       DOCKERHUB_USERNAME: ${DOCKERHUB_USERNAME:-}
       DOCKERHUB_TOKEN: ${DOCKERHUB_TOKEN:-}
       GHCR_USERNAME: ${GHCR_USERNAME:-}

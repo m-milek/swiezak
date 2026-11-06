@@ -14,11 +14,16 @@ import (
 	"github.com/m-milek/swiezak/internal/report"
 )
 
-const refreshInterval = 8 * time.Hour
-
 func main() {
 	keychain := registry.KeychainFromEnv()
 	reportPath := cmp.Or(os.Getenv("REPORT_PATH"), "report.json")
+
+	refreshInterval, err := time.ParseDuration(cmp.Or(os.Getenv("REFRESH_INTERVAL"), "8h"))
+	if err != nil || refreshInterval <= 0 {
+		slog.Error("invalid REFRESH_INTERVAL, expected a positive Go duration like 8h or 30m", "value", os.Getenv("REFRESH_INTERVAL"))
+		os.Exit(1)
+	}
+	slog.Info("refresh interval", "every", refreshInterval)
 
 	reportCache := cache.New(reportPath, refreshInterval, func(ctx context.Context) ([]byte, error) {
 		entries, err := report.Build(ctx, keychain)
