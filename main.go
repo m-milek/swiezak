@@ -6,13 +6,18 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/m-milek/swiezak/internal/check"
 	"github.com/m-milek/swiezak/internal/docker"
 	"github.com/m-milek/swiezak/internal/registry"
 	"github.com/m-milek/swiezak/internal/report"
 )
 
-func handleDocker(w http.ResponseWriter, r *http.Request) {
+type server struct {
+	keychain authn.Keychain
+}
+
+func (s server) handleDocker(w http.ResponseWriter, r *http.Request) {
 	images, err := docker.ListImages(r.Context())
 	if err != nil {
 		slog.Error(err.Error())
@@ -20,7 +25,7 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	registryClient := registry.NewClient()
+	registryClient := registry.NewClient(s.keychain)
 	entries := []report.Entry{}
 	for _, img := range images {
 		entries = append(entries, report.NewEntry(img, check.Image(img, registryClient)))
@@ -33,7 +38,9 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	http.HandleFunc("GET /api/v1/docker", handleDocker)
+	s := server{keychain: registry.KeychainFromEnv()}
+
+	http.HandleFunc("GET /api/v1/docker", s.handleDocker)
 
 	addr := ":1991"
 	slog.Info("listening", "addr", addr)

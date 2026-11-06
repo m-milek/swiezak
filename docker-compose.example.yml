@@ -6,5 +6,10 @@ services:
       - "1991:1991"
     group_add:
       - "${DOCKER_GID:-999}"
+    environment:
+      DOCKERHUB_USERNAME: ${DOCKERHUB_USERNAME:-}
+      DOCKERHUB_TOKEN: ${DOCKERHUB_TOKEN:-}
+      GHCR_USERNAME: ${GHCR_USERNAME:-}
+      GHCR_TOKEN: ${GHCR_TOKEN:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro

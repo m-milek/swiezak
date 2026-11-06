@@ -2,3 +2,4 @@
 main
 Dockerfile
 .dockerignore
+.env

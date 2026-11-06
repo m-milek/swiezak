@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -28,13 +29,15 @@ type tagsResponse struct {
 }
 
 type Client struct {
+	opts      []crane.Option
 	digests   map[string]digestResponse
 	manifests map[string]manifestResponse
 	tags      map[string]tagsResponse
 }
 
-func NewClient() *Client {
+func NewClient(keychain authn.Keychain) *Client {
 	return &Client{
+		opts:      []crane.Option{crane.WithAuthFromKeychain(keychain)},
 		digests:   make(map[string]digestResponse),
 		manifests: make(map[string]manifestResponse),
 		tags:      make(map[string]tagsResponse),
@@ -50,7 +53,7 @@ func (c *Client) Digest(tagName string, platform *v1.Platform) (string, error) {
 		return cached.digest, cached.err
 	}
 
-	digest, err := crane.Digest(tagName)
+	digest, err := crane.Digest(tagName, c.opts...)
 	c.digests[tagName] = digestResponse{digest: digest, err: err}
 	return digest, err
 }
@@ -60,7 +63,7 @@ func (c *Client) manifest(tagName string) (*remote.Descriptor, error) {
 		return cached.desc, cached.err
 	}
 
-	desc, err := crane.Get(tagName)
+	desc, err := crane.Get(tagName, c.opts...)
 	c.manifests[tagName] = manifestResponse{desc: desc, err: err}
 	return desc, err
 }
@@ -91,7 +94,7 @@ func (c *Client) Tags(repoName string) ([]string, error) {
 		return cached.tags, cached.err
 	}
 
-	tags, err := crane.ListTags(repoName)
+	tags, err := crane.ListTags(repoName, c.opts...)
 	c.tags[repoName] = tagsResponse{tags: tags, err: err}
 	return tags, err
 }
