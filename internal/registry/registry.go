@@ -1,11 +1,14 @@
 package registry
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 )
 
@@ -14,38 +17,73 @@ type digestResponse struct {
 	err    error
 }
 
+type manifestResponse struct {
+	desc *remote.Descriptor
+	err  error
+}
+
 type tagsResponse struct {
 	tags []string
 	err  error
 }
 
 type Client struct {
-	digests map[string]digestResponse
-	tags    map[string]tagsResponse
+	digests   map[string]digestResponse
+	manifests map[string]manifestResponse
+	tags      map[string]tagsResponse
 }
 
 func NewClient() *Client {
 	return &Client{
-		digests: make(map[string]digestResponse),
-		tags:    make(map[string]tagsResponse),
+		digests:   make(map[string]digestResponse),
+		manifests: make(map[string]manifestResponse),
+		tags:      make(map[string]tagsResponse),
 	}
 }
 
 func (c *Client) Digest(tagName string, platform *v1.Platform) (string, error) {
-	key := tagName
-	var opts []crane.Option
 	if platform != nil {
-		key += "|" + platform.String()
-		opts = append(opts, crane.WithPlatform(platform))
+		return c.platformDigest(tagName, *platform)
 	}
 
-	if cached, ok := c.digests[key]; ok {
+	if cached, ok := c.digests[tagName]; ok {
 		return cached.digest, cached.err
 	}
 
-	digest, err := crane.Digest(tagName, opts...)
-	c.digests[key] = digestResponse{digest: digest, err: err}
+	digest, err := crane.Digest(tagName)
+	c.digests[tagName] = digestResponse{digest: digest, err: err}
 	return digest, err
+}
+
+func (c *Client) manifest(tagName string) (*remote.Descriptor, error) {
+	if cached, ok := c.manifests[tagName]; ok {
+		return cached.desc, cached.err
+	}
+
+	desc, err := crane.Get(tagName)
+	c.manifests[tagName] = manifestResponse{desc: desc, err: err}
+	return desc, err
+}
+
+func (c *Client) platformDigest(tagName string, platform v1.Platform) (string, error) {
+	desc, err := c.manifest(tagName)
+	if err != nil {
+		return "", err
+	}
+	if !desc.MediaType.IsIndex() {
+		return desc.Digest.String(), nil
+	}
+
+	index, err := v1.ParseIndexManifest(bytes.NewReader(desc.Manifest))
+	if err != nil {
+		return "", fmt.Errorf("parse index %s: %w", tagName, err)
+	}
+	for _, m := range index.Manifests {
+		if m.Platform != nil && m.Platform.Satisfies(platform) {
+			return m.Digest.String(), nil
+		}
+	}
+	return "", fmt.Errorf("no manifest for platform %s in %s", platform.String(), tagName)
 }
 
 func (c *Client) Tags(repoName string) ([]string, error) {
