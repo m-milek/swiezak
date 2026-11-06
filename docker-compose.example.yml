@@ -13,3 +13,7 @@ services:
       GHCR_TOKEN: ${GHCR_TOKEN:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - swiezak-data:/data
+
+volumes:
+  swiezak-data:

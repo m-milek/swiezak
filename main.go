@@ -1,46 +1,43 @@
 package main
 
 import (
+	"cmp"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
-	"github.com/google/go-containerregistry/pkg/authn"
-	"github.com/m-milek/swiezak/internal/check"
-	"github.com/m-milek/swiezak/internal/docker"
+	"github.com/m-milek/swiezak/internal/cache"
 	"github.com/m-milek/swiezak/internal/registry"
 	"github.com/m-milek/swiezak/internal/report"
 )
 
-type server struct {
-	keychain authn.Keychain
-}
-
-func (s server) handleDocker(w http.ResponseWriter, r *http.Request) {
-	images, err := docker.ListImages(r.Context())
-	if err != nil {
-		slog.Error(err.Error())
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	registryClient := registry.NewClient(s.keychain)
-	entries := []report.Entry{}
-	for _, img := range images {
-		entries = append(entries, report.NewEntry(img, check.Image(img, registryClient)))
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(entries); err != nil {
-		slog.Error("encode response failed", "err", err)
-	}
-}
+const refreshInterval = 8 * time.Hour
 
 func main() {
-	s := server{keychain: registry.KeychainFromEnv()}
+	keychain := registry.KeychainFromEnv()
+	reportPath := cmp.Or(os.Getenv("REPORT_PATH"), "report.json")
 
-	http.HandleFunc("GET /api/v1/docker", s.handleDocker)
+	reportCache := cache.New(reportPath, refreshInterval, func(ctx context.Context) ([]byte, error) {
+		entries, err := report.Build(ctx, keychain)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(entries)
+	})
+	go reportCache.Run(context.Background())
+
+	http.HandleFunc("GET /api/v1/docker", func(w http.ResponseWriter, r *http.Request) {
+		data := reportCache.Get()
+		if data == nil {
+			http.Error(w, "report not ready yet", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+	})
 
 	addr := ":1991"
 	slog.Info("listening", "addr", addr)

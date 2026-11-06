@@ -1,8 +1,12 @@
 package report
 
 import (
+	"context"
+
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/m-milek/swiezak/internal/check"
 	"github.com/m-milek/swiezak/internal/docker"
+	"github.com/m-milek/swiezak/internal/registry"
 )
 
 type Entry struct {
@@ -31,4 +35,18 @@ func orEmpty(list []string) []string {
 		return []string{}
 	}
 	return list
+}
+
+func Build(ctx context.Context, keychain authn.Keychain) ([]Entry, error) {
+	images, err := docker.ListImages(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	registryClient := registry.NewClient(keychain)
+	entries := []Entry{}
+	for _, img := range images {
+		entries = append(entries, NewEntry(img, check.Image(img, registryClient)))
+	}
+	return entries, nil
 }
