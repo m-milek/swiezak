@@ -1,0 +1,10 @@
+services:
+  swiezak:
+    build: .
+    image: swiezak:dev
+    ports:
+      - "1991:1991"
+    group_add:
+      - "${DOCKER_GID:-0}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro

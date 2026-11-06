@@ -1,7 +1,9 @@
 services:
   swiezak:
     image: ghcr.io/m-milek/swiezak:0.1.0
-    restart: "no"
+    restart: unless-stopped
+    ports:
+      - "1991:1991"
     group_add:
       - "${DOCKER_GID:-999}"
     volumes:

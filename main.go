@@ -1,8 +1,9 @@
 package main
 
 import (
-	"context"
+	"encoding/json"
 	"log/slog"
+	"net/http"
 	"os"
 
 	"github.com/m-milek/swiezak/internal/check"
@@ -11,20 +12,33 @@ import (
 	"github.com/m-milek/swiezak/internal/report"
 )
 
-func main() {
-	ctx := context.Background()
-
-	images, err := docker.ListImages(ctx)
+func handleDocker(w http.ResponseWriter, r *http.Request) {
+	images, err := docker.ListImages(r.Context())
 	if err != nil {
 		slog.Error(err.Error())
-		os.Exit(1)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	registryClient := registry.NewClient()
-
+	entries := []report.Entry{}
 	for _, img := range images {
-		report.Print(img, check.Image(img, registryClient))
+		entries = append(entries, report.NewEntry(img, check.Image(img, registryClient)))
 	}
 
-	slog.Info("Complete")
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(entries); err != nil {
+		slog.Error("encode response failed", "err", err)
+	}
+}
+
+func main() {
+	http.HandleFunc("GET /api/v1/docker", handleDocker)
+
+	addr := ":1991"
+	slog.Info("listening", "addr", addr)
+	if err := http.ListenAndServe(addr, nil); err != nil {
+		slog.Error(err.Error())
+		os.Exit(1)
+	}
 }

@@ -20,4 +20,6 @@ FROM gcr.io/distroless/static-debian13:nonroot
 
 COPY --from=builder /app/main /swiezak
 
+EXPOSE 1991
+
 ENTRYPOINT ["/swiezak"]
