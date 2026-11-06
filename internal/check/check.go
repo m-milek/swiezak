@@ -24,6 +24,7 @@ type Result struct {
 	Major  []string
 	Minor  []string
 	Patch  []string
+	Error  string
 }
 
 func Image(img docker.Image, registryClient *registry.Client) Result {
@@ -35,8 +36,11 @@ func Image(img docker.Image, registryClient *registry.Client) Result {
 		return Result{Status: StatusPinned}
 	}
 
-	status := checkRebuild(img, tag, pin, registryClient)
-	if status == StatusNotCheckable || status == StatusError {
+	status, err := checkRebuild(img, tag, pin, registryClient)
+	if status == StatusError {
+		return Result{Status: status, Error: err.Error()}
+	}
+	if status == StatusNotCheckable {
 		return Result{Status: status}
 	}
 
@@ -57,10 +61,10 @@ func statusFromRegistryError(err error) Status {
 	return StatusError
 }
 
-func checkRebuild(img docker.Image, tag name.Tag, pin string, registryClient *registry.Client) Status {
+func checkRebuild(img docker.Image, tag name.Tag, pin string, registryClient *registry.Client) (Status, error) {
 	remoteDigest, err := registryClient.Digest(tag.Name(), nil)
 	if err != nil {
-		return statusFromRegistryError(err)
+		return statusFromRegistryError(err), err
 	}
 
 	upToDate := img.HasDigest(remoteDigest)
@@ -68,21 +72,21 @@ func checkRebuild(img docker.Image, tag name.Tag, pin string, registryClient *re
 		upToDate = remoteDigest == pin
 	}
 	if upToDate {
-		return StatusUpToDate
+		return StatusUpToDate, nil
 	}
 
 	if img.PlatformDigest == "" {
-		return StatusRebuildAvailable
+		return StatusRebuildAvailable, nil
 	}
 	remotePlatformDigest, err := registryClient.Digest(tag.Name(), &img.Platform)
 	if err != nil {
 		slog.Error("platform digest query failed", "image", img.ConfigImage, "err", err)
-		return StatusRebuildAvailable
+		return StatusRebuildAvailable, nil
 	}
 	if remotePlatformDigest == img.PlatformDigest {
-		return StatusUpToDate
+		return StatusUpToDate, nil
 	}
-	return StatusRebuildAvailable
+	return StatusRebuildAvailable, nil
 }
 
 func findUpgrades(img docker.Image, tag name.Tag, registryClient *registry.Client) [3][]string {
