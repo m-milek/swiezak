@@ -35,6 +35,7 @@ func main() {
 	go reportCache.Run(context.Background())
 
 	http.HandleFunc("GET /api/v1/docker", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		data := reportCache.Get()
 		if data == nil {
 			http.Error(w, "report not ready yet", http.StatusServiceUnavailable)
